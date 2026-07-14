@@ -1,3 +1,4 @@
+
 # The Experience Machine: Elite Dangerous — Build Doc
 
 A weekend-scope Elite Dangerous mod that lets you speak, in natural language, to a philosopher-persona NPC — a station kiosk, a dodgy mission giver — and get an in-character reply, spoken aloud with an on-screen subtitle. Same family as the Skyrim and Fallout 4 builds (`the-experience-machine-ii`, `the-experience-machine-fo4`), but the underlying mechanism is different, and in most ways simpler: Elite Dangerous has no Creation Kit or Papyrus, so instead of scripting the game engine, this build rides on Frontier's own sanctioned Journal file and the EDMC plugin ecosystem.
@@ -82,7 +83,51 @@ Unlike Skyrim/FO4, there's no in-game item or spell to create — the trigger li
 
 **Done when:** typing a line into the popup produces a spoken reply and a matching on-screen overlay subtitle, with the persona matching your current station/mission context.
 
-## 6. Phase 4 — Persona spec sheet
+## 6. Phase 3.5 — Mission engine (recommended before Phase 4)
+
+Phase 3 gets you single-turn Q&A: player asks a question, persona answers. If you want an NPC to *assign a task* — "turn off your HUD and dock manually, then come back and tell me how it went" — and have the debrief reference what happened, you need a small state layer on top of the persona bridge. That's this phase.
+
+**One thing to know first: not everything the player does is verifiable.** Elite Dangerous's Journal and `Status.json` expose a lot of real-time state — `FlightAssist Off`, `Silent Running`, `Landing Gear Down`, `Shields Up`, `Docked`, on-foot flags, plus Journal events like `FSDJump`, `Scan`, `DockingGranted` (see the [Status File docs](https://elite-journal.readthedocs.io/en/latest/Status%20File/) for the full flag bitfield) — but there is **no flag for "HUD turned off."** That's a purely visual, client-side setting Frontier doesn't expose to any external tool. For a mission like the one above, the plugin can't programmatically confirm the player actually did it — the NPC has to take their word for it in conversation. Given this project's theme (testing subjective intuition, not scoring a puzzle), that's arguably the right design anyway: a self-report check-in, not a graded test. Reserve objective verification (`status_flag` / `journal_event`) for missions where it's actually meaningful and available — "fly with FlightAssist off," "dock without shields," "scan an anomaly."
+
+1. **Define missions as data, not code.** Create a `missions/` folder next to `personas.json`, one YAML file per mission. Your team edits these directly — no Python required to add or tweak a mission. Suggested schema:
+
+   ```yaml
+   id: extended_cognition_01
+   persona: stoic_kiosk              # matches a key in personas.json
+   trigger_keywords: ["extended mind", "cognitive faculties", "intuition"]
+
+   stages:
+     assign:
+       npc_says: >
+         Some say the mind stops at the skull. Others say it leaks into the
+         tools we use to think. Disable your HUD, fly manually, then come
+         back and tell me what changed.
+       pre_survey:
+         - prompt: "Scale of 1-10, how much do you trust your instincts without instruments?"
+           store_as: pre_confidence
+       next: in_progress
+
+     in_progress:
+       completion: self_report        # self_report | status_flag | journal_event
+       # completion: status_flag      # example of an objectively-verifiable alternative
+       # flag: FlightAssistOff
+       next: debrief
+
+     debrief:
+       post_survey:
+         - prompt: "Same scale — now?"
+           store_as: post_confidence
+       npc_reflection: true           # ask the LLM to generate an in-character closing line using stored answers
+   ```
+
+2. **Add a mission loader.** On plugin start — and ideally on a "reload missions" button, so your team can test edits without restarting EDMC — read every file in `missions/` into memory, keyed by `id`.
+3. **Add a state machine.** Each mission instance tracks its current stage (`assign` / `in_progress` / `debrief` / `complete`) per player. A stage advances when either the LLM detects a self-report confirmation in the player's next line ("I did it," "just docked manually"), or the plugin polls `Status.json`/the Journal for the configured flag or event.
+4. **Persist per-player mission state.** Write a small `mission_state.json` next to the plugin (mission id, current stage, timestamp assigned, and any `store_as` survey answers), so a mission that spans a real play session — fly somewhere, do the thing, come back — survives EDMC restarts and station changes.
+5. **Wire the debrief reflection.** When a mission reaches `debrief`, feed the persona's system prompt plus the stored survey answers (e.g. `pre_confidence`/`post_confidence`) back to the LLM so it generates a persona-voiced line that actually references the change, instead of a static string.
+
+**Done when:** you can trigger the extended-cognition mission by asking the kiosk about it, get sent off with a pre-survey answer captured, fly around, come back, and get a debrief that references your own before/after answers in the persona's voice.
+
+## 7. Phase 4 — Persona spec sheet
 
 This is the part unique to your concept, and worth its own phase rather than folding it into Phase 3.
 
@@ -92,7 +137,7 @@ This is the part unique to your concept, and worth its own phase rather than fol
 
 **Done when:** you have at least two working personas (kiosk + dodgy mission giver) with distinct, consistent voices.
 
-## 7. Phase 5 — Integration and end-to-end test
+## 8. Phase 5 — Integration and end-to-end test
 
 1. Launch Elite Dangerous, launch EDMC with your plugin loaded, fly to a station with on-foot access, walk to a kiosk or mission board.
 2. Click "Talk," type a line, confirm the full loop: context detected → correct persona selected → LLM reply → TTS → overlay subtitle, all while standing at the right NPC.
@@ -101,28 +146,29 @@ This is the part unique to your concept, and worth its own phase rather than fol
 
 **Done when:** you can walk between two different NPCs and get two different, contextually appropriate philosopher personas without restarting EDMC.
 
-## 8. Phase 6 — Stretch goals (beyond the weekend)
+## 9. Phase 6 — Stretch goals (beyond the weekend)
 
-- **Per-NPC memory:** persist a short conversation log per station/persona so repeat visits build continuity.
+- **Per-NPC memory:** persist a short conversation log per station/persona so repeat visits build continuity (note: `mission_state.json` from Phase 3.5 already gives you this for mission-linked conversations — this stretch goal is for open-ended chat continuity beyond missions).
 - **Companion API (CAPI) integration:** authenticate against Frontier's Companion API for richer context (full mission list, faction standing, market data) beyond what the Journal alone provides.
 - **Voice input:** replace the typed popup with local Whisper transcription, triggered by the same hotkey.
 - **More personas:** expand `personas.json` to cover more station types, factions, or named mission givers.
 - **Packaging:** publish as a proper EDMC plugin (zip + README) so others can drop it into their own `plugins` folder.
 
-## 9. Timeline
+## 10. Timeline
 
 | When | What |
 |---|---|
 | Day 1 morning | Phase 1 (environment: EDMC, EDMCOverlay, Piper, personas sketched) |
 | Day 1 afternoon | Phase 2 + 3 (plugin skeleton, trigger, LLM/TTS/overlay wired end-to-end) |
-| Day 2 morning | Phase 4 (persona spec sheets, multiple personas tested) |
+| Day 2 morning | Phase 3.5 + Phase 4 (mission engine wired, persona spec sheets, multiple personas tested) |
 | Day 2 afternoon | Phase 5 (full integration + multi-location test pass) |
 | Beyond | Phase 6 (pick 1–2 stretch goals, not all of them) |
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 - **EDMC doesn't show live game state:** confirm the Journal folder path in EDMC's settings matches where the game is actually writing (`Saved Games\Frontier Developments\Elite Dangerous`), and that EDMC was launched after the game.
 - **Plugin doesn't load:** check EDMC's own log (Help menu) for a Python traceback — a bad `plugin_start3()` signature is the most common cause.
 - **Overlay text doesn't appear:** confirm EDMCOverlay's process is running (it's a separate executable EDMC launches) and that Elite Dangerous is running in Borderless or Windowed mode — true Fullscreen Exclusive can block overlays.
 - **Context is wrong/stale:** the plugin's stored station/mission state only updates on new Journal events — test by actually docking/undocking rather than assuming a stale session will refresh.
 - **LLM replies feel slow:** switch to a smaller/faster model, and confirm the LLM and TTS calls are running in a background thread, not blocking EDMC's main loop.
+- **Mission won't advance:** check whether the mission's `completion` type actually matches what you're testing — `self_report` requires the LLM to recognize a confirmation in the player's line, `status_flag`/`journal_event` require that flag/event to actually exist (not everything is exposed — see Phase 3.5's note on HUD state).
