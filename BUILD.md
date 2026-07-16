@@ -7,7 +7,7 @@ A weekend-scope Elite Dangerous mod that lets you speak, in natural language, to
 
 Elite Dangerous is closed-source. There is no official modding toolkit, and there's no way to reach into an NPC's dialogue tree the way Creation Kit + Papyrus lets you in Bethesda games. On-foot kiosk and mission-giver NPCs have fixed, hardcoded dialogue — walk up, press E, canned menu — and that can't be rewritten from outside the game process.
 
-What makes this possible anyway is the same trick behind [COVAS:NEXT](https://www.nexusmods.com/elitedangerous/mods/8) (the ship-computer voice assistant this project is modeled on): Elite Dangerous continuously writes a plain-text [Journal](https://elite-journal.readthedocs.io/) of everything you do — dock, accept a mission, approach a settlement — as line-delimited JSON in `%userprofile%\Saved Games\Frontier Developments\Elite Dangerous`. That's a documented, Frontier-sanctioned interface for third-party tools, not a hack. On top of it, [EDMC](https://github.com/EDCD/EDMarketConnector) (Elite Dangerous Market Connector) is a widely-used companion app that already tails the Journal and exposes a plugin API, and [EDMCOverlay](https://github.com/inorton/EDMCOverlay) is an existing plugin that paints text directly onto the game screen over a simple local JSON/TCP protocol.
+What makes this possible anyway is the same trick behind [COVAS:NEXT](https://www.nexusmods.com/elitedangerous/mods/8) (the ship-computer voice assistant this project is modeled on): Elite Dangerous continuously writes a plain-text [Journal](https://elite-journal.readthedocs.io/) of everything you do — dock, accept a mission, approach a settlement — as line-delimited JSON in `%userprofile%\Saved Games\Frontier Developments\Elite Dangerous`. That's a documented, Frontier-sanctioned interface for third-party tools, not a hack. On top of it, [EDMC](https://github.com/EDCD/EDMarketConnector) (Elite Dangerous Market Connector) is a widely-used companion app that already tails the Journal and exposes a plugin API, and [EDMCModernOverlay](https://github.com/SweetJonnySauce/EDMCModernOverlay) is an existing plugin that paints text directly onto the game screen. Note: despite descending from the classic EDMCOverlay's JSON/TCP protocol, EDMCModernOverlay does **not** run a socket listener for outside connections — it only accepts payloads from code running inside EDMC's own process (see Phase 3, step 4).
 
 So instead of building a mod that changes what the kiosk says, you're building an EDMC plugin: it watches the Journal to know your context (which station, which mission board, which faction), gives you a way to type or speak a line, sends it to an LLM playing your philosopher persona, and displays the reply as an overlay subtitle with TTS audio — timed to feel like it's coming from the NPC in front of you, even though mechanically it's a companion app, not a rewritten game character.
 
@@ -32,11 +32,11 @@ So instead of building a mod that changes what the kiosk says, you're building a
         │
         ├─ calls Piper TTS → reply.wav → plays it locally
         │
-        └─ sends JSON over TCP to EDMCOverlay → subtitle drawn
-           directly on the game screen
+        └─ imports EDMCOverlay's compatibility layer in-process
+           and calls send_raw() → subtitle drawn on the game screen
 ```
 
-Nothing here touches Elite Dangerous' game files or memory. EDMC reads the Journal (a file Frontier already writes for this purpose); EDMCOverlay draws text via its own documented local socket. Everything else is normal Python.
+Nothing here touches Elite Dangerous' game files or memory. EDMC reads the Journal (a file Frontier already writes for this purpose); EDMCModernOverlay draws text via a Python compatibility module (`EDMCOverlay.edmcoverlay`) that your plugin imports directly — not a network socket. Everything else is normal Python.
 
 ## 2. Tools you need
 
@@ -44,7 +44,7 @@ Nothing here touches Elite Dangerous' game files or memory. EDMC reads the Journ
 |---|---|---|
 | Elite Dangerous + Odyssey | The game; Odyssey is required for on-foot kiosks/settlements | Steam / Frontier Store |
 | EDMC (Elite Dangerous Market Connector) | Tails the Journal for you and provides the plugin framework — this is your "PapyrusUtil" | https://github.com/EDCD/EDMarketConnector |
-| EDMCOverlay (or EDMCModernOverlay) | Draws subtitle text directly on the game screen via a local JSON/TCP API | https://github.com/inorton/EDMCOverlay |
+| EDMCModernOverlay | Draws subtitle text directly on the game screen. Your plugin talks to it by importing `EDMCOverlay.edmcoverlay` in-process (not a socket) | https://github.com/SweetJonnySauce/EDMCModernOverlay |
 | Python 3.11+ | EDMC plugins are plain Python; also runs your LLM/TTS calls | python.org |
 | Piper TTS | Local, free, fast text-to-speech (same as the other two builds) | https://github.com/rhasspy/piper |
 | An LLM API key | OpenRouter or OpenAI — powers each persona's reply | openrouter.ai |
@@ -57,11 +57,11 @@ No GPU required. Piper runs on CPU. No SKSE/F4SE equivalent, no Creation Kit —
 1. Install Elite Dangerous and the Odyssey expansion; launch once and confirm you can walk around a settlement or station concourse.
 2. Confirm the Journal is being written: play for a minute, then check `%userprofile%\Saved Games\Frontier Developments\Elite Dangerous` for a `Journal.*.log` file growing with new lines.
 3. Install EDMC, launch it alongside the game, and confirm it shows your commander name and current system — this proves it's reading the Journal correctly.
-4. Install EDMCOverlay (or EDMCModernOverlay) as an EDMC plugin per its README; test it with the sample script that draws "Hello" on screen.
+4. Install EDMCModernOverlay as an EDMC plugin per its README. Test it with the built-in `!ovr test` chat command (type it in the in-game chat panel) to confirm the overlay itself renders. Do **not** test with a standalone socket script — EDMCModernOverlay doesn't listen on a port; see Phase 3, step 4 for the correct way to send it a message from code.
 5. Set up Python: `python -m venv venv`, activate it, `pip install requests keyboard`. Download a Piper voice model and confirm `piper --model <voice>.onnx --output_file test.wav` works from the command line.
 6. Decide your first two personas (e.g. a Stoic-inspired station kiosk, a Machiavellian mission broker) and sketch a 3–5 sentence system prompt for each — you'll wire these in Phase 3.
 
-**Done when:** EDMC shows live game state, EDMCOverlay can draw test text on screen, and Piper can turn a string into a `.wav` from the command line.
+**Done when:** EDMC shows live game state, EDMCModernOverlay renders the `!ovr test` box, and Piper can turn a string into a `.wav` from the command line.
 
 ## 4. Phase 2 — The trigger (EDMC plugin skeleton)
 
@@ -78,7 +78,7 @@ Unlike Skyrim/FO4, there's no in-game item or spell to create — the trigger li
 1. **Pick the persona.** Use the stored station/context data from Phase 2 to choose which philosopher system prompt to use (e.g., station services kiosk vs. a mission-giver NPC name pulled from `Missions` journal data).
 2. **Call the LLM.** Send the system prompt plus the player's typed line to your LLM API of choice. Keep responses short (2–4 sentences) so TTS playback stays snappy.
 3. **Generate speech.** Pipe the reply into Piper, save as `reply.wav`, play it locally (`winsound`/`playsound`).
-4. **Show the subtitle.** Send a JSON message to EDMCOverlay's TCP socket (`127.0.0.1:5010`) with the reply text, a reasonable `ttl`, and a screen position — this is your Fuz Ro D-oh / F4z Ro D-oh equivalent, except it's a real in-game overlay instead of a simulated subtitle.
+4. **Show the subtitle.** Import EDMCModernOverlay's compatibility layer directly in your plugin's code — `from EDMCOverlay import edmcoverlay` — and call `edmcoverlay.Overlay().send_raw({...})` with the reply text, a reasonable `ttl`, and a screen position. This runs in-process (EDMC and EDMCModernOverlay share the same Python process), not over a network socket — there is no `127.0.0.1:5010` listener to connect to anymore. This is your Fuz Ro D-oh / F4z Ro D-oh equivalent, except it's a real in-game overlay instead of a simulated subtitle.
 5. Run the LLM/TTS calls in a background thread so they don't freeze EDMC's UI while waiting on the API.
 
 **Done when:** typing a line into the popup produces a spoken reply and a matching on-screen overlay subtitle, with the persona matching your current station/mission context.
@@ -168,7 +168,7 @@ This is the part unique to your concept, and worth its own phase rather than fol
 
 - **EDMC doesn't show live game state:** confirm the Journal folder path in EDMC's settings matches where the game is actually writing (`Saved Games\Frontier Developments\Elite Dangerous`), and that EDMC was launched after the game.
 - **Plugin doesn't load:** check EDMC's own log (Help menu) for a Python traceback — a bad `plugin_start3()` signature is the most common cause.
-- **Overlay text doesn't appear:** confirm EDMCOverlay's process is running (it's a separate executable EDMC launches) and that Elite Dangerous is running in Borderless or Windowed mode — true Fullscreen Exclusive can block overlays.
+- **Overlay text doesn't appear:** first confirm EDMCModernOverlay itself is working by typing `!ovr test` in the game chat — you should see a black test box. If that works but your plugin's own messages don't show, you're not actually reaching the overlay: confirm your plugin does `from EDMCOverlay import edmcoverlay` and calls `.send_raw()`/`.send_message()` directly (in-process), not a raw socket connection to port 5010 — EDMCModernOverlay doesn't listen on that port for outside connections. Also confirm Elite Dangerous is running in Borderless or Windowed mode — true Fullscreen Exclusive can block overlays.
 - **Context is wrong/stale:** the plugin's stored station/mission state only updates on new Journal events — test by actually docking/undocking rather than assuming a stale session will refresh.
 - **LLM replies feel slow:** switch to a smaller/faster model, and confirm the LLM and TTS calls are running in a background thread, not blocking EDMC's main loop.
 - **Mission won't advance:** check whether the mission's `completion` type actually matches what you're testing — `self_report` requires the LLM to recognize a confirmation in the player's line, `status_flag`/`journal_event` require that flag/event to actually exist (not everything is exposed — see Phase 3.5's note on HUD state).
