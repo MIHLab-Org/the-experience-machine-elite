@@ -46,7 +46,7 @@ Nothing here touches Elite Dangerous' game files or memory. EDMC reads the Journ
 | EDMC (Elite Dangerous Market Connector) | Tails the Journal for you and provides the plugin framework — this is your "PapyrusUtil" | https://github.com/EDCD/EDMarketConnector |
 | EDMCModernOverlay | Draws subtitle text directly on the game screen. Your plugin talks to it by importing `EDMCOverlay.edmcoverlay` in-process (not a socket) | https://github.com/SweetJonnySauce/EDMCModernOverlay |
 | Python 3.11+ | EDMC plugins are plain Python; also runs your LLM/TTS calls | python.org |
-| Piper TTS | Local, free, fast text-to-speech (same as the other two builds) | https://github.com/rhasspy/piper |
+| Piper TTS | Local, free, fast text-to-speech (same as the other two builds). Install via `pip install piper-tts` — the old standalone binary repo has moved and is no longer the recommended path | https://github.com/OHF-Voice/piper1-gpl |
 | An LLM API key | OpenRouter or OpenAI — powers each persona's reply | openrouter.ai |
 | `keyboard` (Python package) | Optional — global hotkey to open the "talk" popup without alt-tabbing | PyPI |
 
@@ -58,10 +58,11 @@ No GPU required. Piper runs on CPU. No SKSE/F4SE equivalent, no Creation Kit —
 2. Confirm the Journal is being written: play for a minute, then check `%userprofile%\Saved Games\Frontier Developments\Elite Dangerous` for a `Journal.*.log` file growing with new lines.
 3. Install EDMC, launch it alongside the game, and confirm it shows your commander name and current system — this proves it's reading the Journal correctly.
 4. Install EDMCModernOverlay as an EDMC plugin per its README. Test it with the built-in `!ovr test` chat command (type it in the in-game chat panel) to confirm the overlay itself renders. Do **not** test with a standalone socket script — EDMCModernOverlay doesn't listen on a port; see Phase 3, step 4 for the correct way to send it a message from code.
-5. Set up Python: `python -m venv venv`, activate it, `pip install requests keyboard`. Download a Piper voice model and confirm `piper --model <voice>.onnx --output_file test.wav` works from the command line.
+5. Set up Python: `python -m venv venv`, activate it, `pip install requests keyboard piper-tts`. Download a voice with `python -m piper.download_voices en_US-lessac-medium`, then confirm `python -m piper -m en_US-lessac-medium -f test.wav -- "Hello, CMDR."` produces a `test.wav` that actually plays.
+   > **Watch out:** if you use the older standalone `piper` binary instead of the `piper-tts` pip package, it reads the sentence to speak from **stdin**, not from a flag — `piper --model <voice>.onnx --output_file test.wav` with nothing piped in will "succeed" and write a WAV file with no real audio in it, which shows up as "corrupted" when you try to play it. Either pipe text in (`echo "Hello" | piper --model <voice>.onnx --output_file test.wav`) or use the `piper-tts` command above, which takes the text as a real argument so this can't happen silently.
 6. Decide your first two personas (e.g. a Stoic-inspired station kiosk, a Machiavellian mission broker) and sketch a 3–5 sentence system prompt for each — you'll wire these in Phase 3.
 
-**Done when:** EDMC shows live game state, EDMCModernOverlay renders the `!ovr test` box, and Piper can turn a string into a `.wav` from the command line.
+**Done when:** EDMC shows live game state, EDMCModernOverlay renders the `!ovr test` box, and Piper produces a `.wav` file that actually plays back audio (not just a file that exists).
 
 ## 4. Phase 2 — The trigger (EDMC plugin skeleton)
 
